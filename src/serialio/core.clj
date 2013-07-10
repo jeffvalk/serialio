@@ -1,19 +1,9 @@
+;; Provides:
+;;
+;; - Simple, flexible handler use for received data
 ;; - Synchronous, asynchronous, and mixed mode use
-;;
+;; - Dynamic manipulation of available ports
 ;; - Sane error messages when opening a port fails
-
-
-;; A few other enhancements possibilities:
-;;
-;; - Use a protocol to allow 'write' to take a seq of bytes, or a byte array,
-;; and perhaps an int, string, etc.
-;; - Create a 'with-handler' macro for 'read' that stores the current handler,
-;; executes the body with a specified handler, restores the original handler,
-;; and returns the result of the body. This will allow mixed mode operation
-;; (synchronous and asynchronous).
-
-(set! *warn-on-reflection* true)
-
 (ns serialio.core
   "Core functions for communicating with a serial device"
   (:refer-clojure :exclude [read])
@@ -96,43 +86,36 @@
   (throw (Exception. (apply format msg params))))
 
 ;; ## Ports and listeners
-
-;; Serial communication using [RXTX](http://rxtx.qbang.org) is asynchronous by
-;; default, and synchronous send-and-receieve requires a bit more coordination.
+;; The trickiest bit of setting up a port is managing incoming data flexibly. To
+;; receive data, we register a listener, which starts a new monitor thread on
+;; which the handler is called when data is received. This gives us basic
+;; asynchronous reads, invoking the same handler each time. However, if we want
+;; to send a message and return the response synchronously, we need to
+;; coordinate the sending thread and the listener/handler thread.
 ;;
-;; To receive data notifications, we register a listener, which starts a new
-;; monitor thread on which the handler is called when data is received. For
-;; asynchronous reads, this is all we need. However, if we want to send a
-;; message and return the response synchronously, we need to coordinate the
-;; sending thread and the listener/handler thread.
+;; What we want is a way to make the handler subordinate to the sending thread
+;; within a specific context. We do this by separating the handler from the
+;; listener:
 ;;
-;; We could simply dispense with the listener and use polling to avoid this, but
-;; at the cost of efficiency. What we want is a way to make the handler
-;; subordinate to the sending thread within a specific context. We do this by
-;; separating the handler from the listener:
-;;
-;; - Store the input handler in an atom.
-;; - Register a listener that, when input is received, derefs the atom
-;; and invokes the current handler on the data.
+;; - Store the handler function in an atom.
+;; - Register a listener that, when data is received, derefs the atom and
+;; invokes the current handler on the data.
 ;; - When a blocking read is needed, return a promise, and use a handler that
-;; delivers it on input received.
+;; delivers it on data received.
+;;
+;; With this approach, listeners are an implementation detail, and the API deals
+;; only with handlers, which can be changed easily.
 
-(defn close
-  "Closes a port and removes its event listener"
-  [port]
-  (doto (:device port)
-    (.removeEventListener)
-    (.close)))
-
-;; Make port Closeable for 'with-open' support
+;; Port type implements Closeable for "with-open" support
+(declare close)
 (defrecord Port [path device handler]
   Closeable
   (close [this] (close this)))
 
 (defn open
-  "Opens a port with the specified baud rate. If the connected device will send
-  data on its own, a handler function may be speficied, which takes an input
-  stream as its lone argument."
+  "Opens a port with the specified baud rate and options. If the port will
+  listen for incoming data, a handler function may be speficied, which takes an
+  InputStream as its lone argument."
   ([path baud] (open path baud (constantly nil)))
   ([path baud handler] (open path baud 8 1 0 handler))
   ([path baud data-bits stop-bits parity handler]
@@ -150,13 +133,22 @@
                                     (@handler (.getInputStream device)))))))
          (Port. path device handler))
        (catch NoSuchPortException e
-         (err "'%s' is not defined. See function 'add-ports'." path))
+         (err "'%s' is not a known port. See function 'add-ports'." path))
        (catch PortInUseException e
          (err "'%s' is already in use." path))
        (catch UnsupportedCommOperationException e
          (err "'%s' does not support connections at %d baud." path baud)))))
 
+(defn close
+  "Closes a port and removes its event listener"
+  [port]
+  (doto (:device port)
+    (.removeEventListener)
+    (.close)))
+
 ;; ## Handlers
+;; Handlers are functions that take an InputStream as a single argument and
+;; define how received data is processed.
 
 (defn on-data
   "Updates the handler to be called on each data received event"
