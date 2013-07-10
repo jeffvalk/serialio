@@ -157,13 +157,18 @@
 
 ;; ## Reading and writing data
 
+;; This stores the existing handler, uses a read-specific handler to deliver
+;; the response promise, then restores the original handler.
 (defn read
   "Performs a synchronous read from the port, blocking until data is received
   or the specified timeout (in milliseconds) has elapsed"
   [port timeout]
-  (let [resp (promise)]
-    (on-data port (fn [in] (deliver resp (read-stream in))))
-    (deref resp timeout nil)))
+  (let [resp (promise)
+        orig (deref (:handler port))
+        _    (on-data port (fn [in] (deliver resp (read-stream in))))
+        ret  (deref resp timeout nil)
+        _    (on-data port orig)]
+    ret))
 
 (defn write
   "Writes the data to the port and returns the bytes written"
