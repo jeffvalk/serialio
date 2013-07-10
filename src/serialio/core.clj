@@ -1,41 +1,44 @@
-;; This library currently depends on Sam Aaron's "serial-port" lib. It doesn't
-;; reuse much of it, and might be better off rewriting those functions. In
-;; particular, this library is designed to allow both synchronous (blocking)
-;; and asychronous (i.e. listen and handle) read operations, whereas the
-;; "serial-port" base lib only considers the latter. Here are a few other
-;; enhancements that would be nice:
+;; - Synchronous, asynchronous, and mixed mode use
 ;;
-;; - On the Port record type, implement java.io.Closeable so that it can be
-;; used with Clojure's 'with-open' macro.
+;; - Sane error messages when opening a port fails
+
+
+;; A few other enhancements possibilities:
+;;
 ;; - Use a protocol to allow 'write' to take a seq of bytes, or a byte array,
 ;; and perhaps an int, string, etc.
 ;; - Create a 'with-handler' macro for 'read' that stores the current handler,
 ;; executes the body with a specified handler, restores the original handler,
 ;; and returns the result of the body. This will allow mixed mode operation
 ;; (synchronous and asynchronous).
-;; - Give all functions reasonable return values for a more functional style.
-;; - Eliminate reflection on handlers (type InputStreams), as these can get
-;; called frequently.
+
+(set! *warn-on-reflection* true)
 
 (ns serialio.core
   "Core functions for communicating with a serial device"
   (:refer-clojure :exclude [read])
-  (:require [clojure.string :as str]
-            [serial-port :as ser])
-  (:import  [java.io InputStream]))
+  (:require [clojure.string :as str])
+  (:import  (clojure.lang Sequential)
+            (gnu.io CommPortIdentifier
+                    NoSuchPortException
+                    PortInUseException
+                    SerialPort
+                    SerialPortEvent
+                    SerialPortEventListener
+                    UnsupportedCommOperationException)
+            (java.io Closeable InputStream)))
 
 ;; ## Constants
 
-(def read-timeout
-  "How long to wait for a command to return in milliseconds"
-  3000)
+;; Default timeout for port opening and blocking reads
+(def default-timeout 3000)
 
-;; ## Utility functions
+;; ## Port enumeration
 
-(defn read-stream
-  "Returns the sequence of available bytes from the input stream"
-  [in]
-  (doall (repeatedly (.available in) #(.read in))))
+(defn port-ids
+  "Returns a list of available port identifiers"
+  []
+  (enumeration-seq (CommPortIdentifier/getPortIdentifiers)))
 
 (defn add-port-id
   "Adds the path to the available ports via the 'gnu.io.rxtx.SerialPorts'
@@ -49,7 +52,33 @@
                          (conj path)))]
     (System/setProperty prop (str/join ":" paths))))
 
-;; ## Core functions
+;; Print port identifiers usefully. (The RXTX port identifier class neglects to
+;; implement toString, so the default Object print-method isn't helpful.)
+(defmethod print-method CommPortIdentifier
+  [port-id writer]
+  (.write writer (str "#<" (.getSimpleName (class port-id))
+                      " "  (.getName port-id) ">")))
+
+;; ## Utility functions
+
+;; Allow write operations on various data types
+(defprotocol ByteData (to-bytes ^bytes [this]))
+(extend-protocol ByteData
+  Sequential (to-bytes [this] (byte-array (map byte this)))
+  String (to-bytes [this] (.getBytes this))
+  Object (to-bytes [this] this))
+
+(defn read-stream
+  "Returns the sequence of available bytes from the input stream"
+  [^InputStream in]
+  (doall (repeatedly (.available in) #(.read in))))
+
+(defn- err
+  "Convience function for throwing exceptions"
+  [msg & params]
+  (throw (Exception. (apply format msg params))))
+
+;; ## Ports and listeners
 
 ;; Serial communication using [RXTX](http://rxtx.qbang.org) is asynchronous by
 ;; default, and synchronous send-and-receieve requires a bit more coordination.
@@ -71,46 +100,74 @@
 ;; - When a blocking read is needed, return a promise, and use a handler that
 ;; delivers it on input received.
 
+(defn close
+  "Closes a port and removes its event listener"
+  [port]
+  (doto (:device port)
+    (.removeEventListener)
+    (.close)))
+
+;; Make port Closeable for 'with-open' support
+(defrecord Port [path device handler]
+  Closeable
+  (close [this] (close this)))
+
 (defn open
   "Opens a port with the specified baud rate. If the connected device will send
   data on its own, a handler function may be speficied, which takes an input
   stream as its lone argument."
-  ([path baud]
-     (open path baud (constantly nil)))
-  ([path baud handler]
-     (let [a (atom handler)]
-       (doto (-> (ser/open path baud)
-                 (assoc :handler a))
-         (ser/listen (fn [in] (@a in)))))))
+  ([path baud] (open path baud (constantly nil)))
+  ([path baud handler] (open path baud 8 1 0 handler))
+  ([path baud data-bits stop-bits parity handler]
+     (try
+       (let [handler (atom handler)
+             port-id (CommPortIdentifier/getPortIdentifier path)
+             device  ^SerialPort (.open port-id path default-timeout)]
+         (doto device
+           (.setSerialPortParams baud data-bits stop-bits parity)
+           (.notifyOnDataAvailable true)
+           (.addEventListener (reify SerialPortEventListener
+                                (serialEvent [_ event]
+                                  (when (= (.getEventType event)
+                                           SerialPortEvent/DATA_AVAILABLE)
+                                    (@handler (.getInputStream device)))))))
+         (Port. path device handler))
+       (catch NoSuchPortException e
+         (err "'%s' is not defined. See function 'add-port-id'." path))
+       (catch PortInUseException e
+         (err "'%s' is already in use." path))
+       (catch UnsupportedCommOperationException e
+         (err "'%s' does not support connections at %d baud." path baud)))))
+
+;; ## Handlers
+
+(defn on-data
+  "Updates the handler to be called on each data received event"
+  [port handler]
+  (reset! (:handler port) handler))
+
+;; ## Reading and writing data
 
 (defn read
   "Performs a synchronous read from the port, blocking until data is received
   or the specified timeout (in milliseconds) has elapsed"
   [port timeout]
-  (let [resp (promise)
-        handler (fn [in] (deliver resp (read-stream in)))]
-    (reset! (:handler port) handler)
+  (let [resp (promise)]
+    (on-data port (fn [in] (deliver resp (read-stream in))))
     (deref resp timeout nil)))
 
 (defn write
-  "Writes the data to the port"
-  [port bytes]
-  (ser/write port bytes))
+  "Writes the data to the port and returns the bytes written"
+  [port data]
+  (let [bytes (to-bytes data)
+        device ^SerialPort (:device port)]
+    (.write (.getOutputStream device) bytes)
+    bytes))
 
 (defn exec
   "Sends the specified data, and synchronously returns the response data"
-  ([port bytes]
-     (exec port bytes read-timeout))
-  ([port bytes timeout]
-     (write port bytes)
+  ([port data]
+     (exec port data default-timeout))
+  ([port data timeout]
+     (write port data)
      (read port timeout)))
-
-(defn close
-  "Closes a port and removes its event listener"
-  [port]
-  (ser/close port))
-
-(defn on-data
-  "Calls the handler for each data received event"
-  [port handler]
-  (reset! (:handler port) handler))

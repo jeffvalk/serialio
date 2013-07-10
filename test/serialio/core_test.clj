@@ -1,4 +1,5 @@
 (ns serialio.core-test
+  (:refer-clojure :exclude [read])
   (:require [clojure.test :refer :all]
             [clojure.java.shell :as sh]
             [clojure.string :as str]
@@ -37,10 +38,12 @@
   (let [{:keys [pid ptys baud] :as socat} (pty-setup)]
     (println socat)
     (try
-      (doseq [pty ptys] (add-port-id pty))
-      (reset! ports (map #(open % baud) ptys))
-      (f)
-      (doseq [port @ports] (close port))
+      (do
+        (doseq [pty ptys] (add-port-id pty))
+        (with-open [master (open (first ptys) baud)
+                    slave  (open (second ptys) baud)]
+          (reset! ports [master slave])
+          (f)))
       (finally (sh/sh "kill" pid)))))
 
 (use-fixtures :once pty-fixture)
@@ -48,8 +51,7 @@
 (deftest echo
   (let [[master slave] @ports]
     (on-data slave (fn [in]
-                     (write slave
-                            (byte-array (map byte (read-stream in))))))
+                     (write slave (read-stream in))))
     (let [msg (.getBytes "Hi there!")
           resp (exec master msg)]
       (println "Sent:     " (seq msg))
@@ -75,4 +77,3 @@
 
   (println (read port 6000))
   )
-
