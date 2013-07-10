@@ -28,31 +28,52 @@
                     UnsupportedCommOperationException)
             (java.io Closeable InputStream)))
 
+;; This uses [RXTX](http://rxtx.qbang.org) version 2.2, and for available port
+;; manipulation, leverages speicific behavior of that library.
+
 ;; ## Constants
 
 ;; Default timeout for port opening and blocking reads
 (def default-timeout 3000)
 
-;; ## Port enumeration
+;; ## Available ports
+;; The RXTX driver will first look for an explicit list of defined ports, and
+;; if none exists, will scan the host for ports. Ports are defined using the
+;; "gnu.io.rxtx.SerialPorts" property, either via a "gnu.io.rxtx.properties"
+;; file in "java.ext.dirs" or programmatically. This lets us manipulate the list
+;; of available ports at runtime.
 
-(defn system-ports
-  "Returns a list of available port names"
+(def ^:private path-sep (System/getProperty "path.separator"))
+
+(defn available-ports
+  "Returns a list of available port names. By default, this scans the host
+  machine. If ports are registered using the 'gnu.io.rxtx.SerialPorts' system
+  property, either by calling 'add-ports' or setting this directly, only
+  registered ports are available."
   []
-  (map #(.getName %)
-       (enumeration-seq (CommPortIdentifier/getPortIdentifiers))))
+  (if-let [v (System/getProperty "gnu.io.rxtx.SerialPorts")]
+    (seq (.split v path-sep))
+    (map #(.getName %)
+         (enumeration-seq (CommPortIdentifier/getPortIdentifiers)))))
 
 (defn add-ports
-  "Adds the paths to the available ports via the 'gnu.io.rxtx.SerialPorts'
-  system property. Once this property is set, no scanning is performed;
-  only the specified ports are available."
+  "Registers the paths as available ports via the 'gnu.io.rxtx.SerialPorts'
+  system property. Once this property is set, no port scanning is performed;
+  only the registered ports are available."
   [& paths]
-  (let [sep (System/getProperty "path.separator")
-        v   (System/getProperty "gnu.io.rxtx.SerialPorts" "")
-        v   (str/join sep (disj (into (apply sorted-set paths)
-                                      (.split v sep))
-                                ""))]
-    (System/setProperty "gnu.io.rxtx.SerialPorts" v)
-    v))
+  (let [pv (System/getProperty "gnu.io.rxtx.SerialPorts" "")
+        nv (str/join path-sep (disj (into (apply sorted-set paths)
+                                          (.split pv path-sep))
+                                    ""))]
+    (System/setProperty "gnu.io.rxtx.SerialPorts" nv)
+    nv))
+
+(defn reset-ports
+  "Clears the 'gnu.io.rxtx.SerialPorts' system property. This restores
+  default port scanning behavior."
+  []
+  (System/clearProperty "gnu.io.rxtx.SerialPorts")
+  nil)
 
 ;; ## Utility functions
 
