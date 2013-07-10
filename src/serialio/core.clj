@@ -35,29 +35,24 @@
 
 ;; ## Port enumeration
 
-(defn port-ids
-  "Returns a list of available port identifiers"
+(defn system-ports
+  "Returns a list of available port names"
   []
-  (enumeration-seq (CommPortIdentifier/getPortIdentifiers)))
+  (map #(.getName %)
+       (enumeration-seq (CommPortIdentifier/getPortIdentifiers))))
 
-(defn add-port-id
-  "Adds the path to the available ports via the 'gnu.io.rxtx.SerialPorts'
+(defn add-ports
+  "Adds the paths to the available ports via the 'gnu.io.rxtx.SerialPorts'
   system property. Once this property is set, no scanning is performed;
   only the specified ports are available."
-  [path]
-  (let [prop "gnu.io.rxtx.SerialPorts"
-        paths (apply sorted-set
-                     (-> (str (System/getProperty prop))
-                         (str/split #":")
-                         (conj path)))]
-    (System/setProperty prop (str/join ":" paths))))
-
-;; Print port identifiers usefully. (The RXTX port identifier class neglects to
-;; implement toString, so the default Object print-method isn't helpful.)
-(defmethod print-method CommPortIdentifier
-  [port-id writer]
-  (.write writer (str "#<" (.getSimpleName (class port-id))
-                      " "  (.getName port-id) ">")))
+  [& paths]
+  (let [sep (System/getProperty "path.separator")
+        v   (System/getProperty "gnu.io.rxtx.SerialPorts" "")
+        v   (str/join sep (disj (into (apply sorted-set paths)
+                                      (.split v sep))
+                                ""))]
+    (System/setProperty "gnu.io.rxtx.SerialPorts" v)
+    v))
 
 ;; ## Utility functions
 
@@ -65,6 +60,7 @@
 (defprotocol ByteData (to-bytes ^bytes [this]))
 (extend-protocol ByteData
   Sequential (to-bytes [this] (byte-array (map byte this)))
+  Number (to-bytes [this] (byte-array 1 (byte this)))
   String (to-bytes [this] (.getBytes this))
   Object (to-bytes [this] this))
 
@@ -133,7 +129,7 @@
                                     (@handler (.getInputStream device)))))))
          (Port. path device handler))
        (catch NoSuchPortException e
-         (err "'%s' is not defined. See function 'add-port-id'." path))
+         (err "'%s' is not defined. See function 'add-ports'." path))
        (catch PortInUseException e
          (err "'%s' is already in use." path))
        (catch UnsupportedCommOperationException e

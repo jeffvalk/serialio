@@ -39,10 +39,10 @@
     (println socat)
     (try
       (do
-        (doseq [pty ptys] (add-port-id pty))
-        (with-open [master (open (first ptys) baud)
-                    slave  (open (second ptys) baud)]
-          (reset! ports [master slave])
+        (apply add-ports ptys)
+        (with-open [pty1 (open (first ptys) baud)
+                    pty2 (open (second ptys) baud)]
+          (reset! ports [pty1 pty2])
           (f)))
       (finally (sh/sh "kill" pid)))))
 
