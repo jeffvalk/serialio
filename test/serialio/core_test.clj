@@ -46,18 +46,52 @@
           (f)))
       (finally (sh/sh "kill" pid)))))
 
-(use-fixtures :once pty-fixture)
+(use-fixtures :each pty-fixture)
 
-(deftest echo
-  (let [[master slave] @ports]
-    (on-data slave (fn [in]
-                     (write slave (read-stream in))))
-    (let [msg (.getBytes "Hi there!")
-          resp (exec master msg)]
-      (println "Sent:     " (seq msg))
-      (println "Received: " resp)
-      (is (= (seq msg)
-             (seq (exec master msg)))))))
+(defn- rand-bytes [n] (repeatedly n #(rand-int 128)))
+
+(deftest master-slave
+  (let [[master slave] @ports
+        exec (partial exec master)
+        echo (fn [in] (write slave (read-stream in)))]
+    (on-data slave echo)
+    (testing "Master/slave ports"
+      (testing "with a long message"
+        (let [m (rand-bytes 2048)]
+          (is (= m (exec m)))))
+      (testing "read timeout with no data"
+        (is (nil? (read master 100))))
+      (testing "with varied data types"
+        (let [l (rand-bytes 32), a (to-bytes l)
+              v (vec l), s (String. a), n 42]
+          (is (= l (exec l)) "list")
+          (is (= v (exec v)) "vector")
+          (is (= (seq a) (seq (exec a))) "bytes")
+          (is (= s (String. (to-bytes (exec s)))) "string")
+          (is (= n (first (exec n))) "number"))))))
+
+(deftest mixed-mode
+  (let [[peer1 peer2] @ports
+        echo (fn [port]
+               (fn [in] (write port (read-stream in))))]
+    (on-data peer1 (echo peer1))
+    (on-data peer2 (echo peer2))
+    (testing "Bidirectional send and receive"
+      (let [a (rand-bytes 128)
+            b (rand-bytes 256)]
+        (is (= a (exec peer1 a)))
+        (is (= a (exec peer2 a)))
+        (is (= b (exec peer1 b)))
+        (is (= b (exec peer2 b)))))))
+
+(deftest adding-ports
+  (testing "Repeatedly add and open ports"
+    (let [v :ok!
+          f (->> (constantly v)
+                 (partial pty-fixture)
+                 (partial pty-fixture)
+                 (partial pty-fixture))]
+      (is (= v (f))))))
 
 
 (comment
