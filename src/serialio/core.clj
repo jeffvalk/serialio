@@ -36,10 +36,9 @@
 (def ^:private path-sep (System/getProperty "path.separator"))
 
 (defn available-ports
-  "Returns a list of available port names. By default, this scans the host
-  machine. If ports are registered using the 'gnu.io.rxtx.SerialPorts' system
-  property, either by calling 'add-ports' or setting this directly, only
-  registered ports are available."
+  "Returns a list of available port names. If ports have been registered using
+  'add-ports', the list is returned as is; otherwise, a new scan of the host is
+  performed."
   []
   (if-let [v (System/getProperty "gnu.io.rxtx.SerialPorts")]
     (seq (.split v path-sep))
@@ -47,23 +46,18 @@
          (enumeration-seq (CommPortIdentifier/getPortIdentifiers)))))
 
 (defn add-ports
-  "Registers the paths as available ports via the 'gnu.io.rxtx.SerialPorts'
-  system property. Once this property is set, no port scanning is performed;
-  only the registered ports are available."
+  "Adds the paths as available ports. Once this property is set, no additional
+  port scanning is performed; only the registered ports are available."
   [& paths]
-  (let [pv (System/getProperty "gnu.io.rxtx.SerialPorts" "")
-        nv (str/join path-sep (disj (into (apply sorted-set paths)
-                                          (.split pv path-sep))
-                                    ""))]
-    (System/setProperty "gnu.io.rxtx.SerialPorts" nv)
-    nv))
+  (let [v (distinct (apply conj (available-ports) paths))]
+    (System/setProperty "gnu.io.rxtx.SerialPorts" (str/join path-sep v))
+    v))
 
 (defn reset-ports
-  "Clears the 'gnu.io.rxtx.SerialPorts' system property. This restores
-  default port scanning behavior."
+  "Clears added ports, and restores the default port scanning behavior."
   []
   (System/clearProperty "gnu.io.rxtx.SerialPorts")
-  nil)
+  (available-ports))
 
 ;; ## Utility functions
 
@@ -103,8 +97,8 @@
 ;; - When a blocking read is needed, return a promise, and use a handler that
 ;; delivers it on data received.
 ;;
-;; With this approach, listeners are an implementation detail, and the API deals
-;; only with handlers, which can be changed easily.
+;; With this approach, the listener is an implementation detail, and the API
+;; deals only with handlers, which can be changed easily.
 
 ;; Port type implements Closeable for "with-open" support
 (declare close)
@@ -147,8 +141,8 @@
     (.close)))
 
 ;; ## Handlers
-;; Handlers are functions that take an InputStream as a single argument and
-;; define how received data is processed.
+;; Handlers are functions that take a single InputStream argument and define how
+;; received data is processed.
 
 (defn on-data
   "Updates the handler to be called on each data received event"
