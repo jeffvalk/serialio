@@ -21,12 +21,14 @@
 ;; This uses [RXTX](http://rxtx.qbang.org) version 2.2, and for available port
 ;; manipulation, leverages speicific behavior of that library.
 
-;; ## Constants
+
+;;; ## Constants
 
 ;; Default timeout for port opening and blocking reads
 (def default-timeout 3000)
 
-;; ## Available ports
+
+;;; ## Available ports
 ;; The RXTX driver will first look for an explicit list of defined ports, and
 ;; if none exists, will scan the host for ports. Ports are defined using the
 ;; "gnu.io.rxtx.SerialPorts" property, either via a "gnu.io.rxtx.properties"
@@ -59,27 +61,8 @@
   (System/clearProperty "gnu.io.rxtx.SerialPorts")
   (available-ports))
 
-;; ## Utility functions
 
-;; Allow write operations on various data types
-(defprotocol ByteData (to-bytes ^bytes [this]))
-(extend-protocol ByteData
-  Sequential (to-bytes [this] (byte-array (map byte this)))
-  Number (to-bytes [this] (byte-array 1 (byte this)))
-  String (to-bytes [this] (.getBytes this))
-  Object (to-bytes [this] this))
-
-(defn read-stream
-  "Returns the sequence of available bytes from the input stream"
-  [^InputStream in]
-  (doall (repeatedly (.available in) #(.read in))))
-
-(defn- err
-  "Convience function for throwing exceptions"
-  [msg & params]
-  (throw (Exception. (apply format msg params))))
-
-;; ## Ports and listeners
+;;; ## Ports and listeners
 ;; The trickiest bit of setting up a port is managing incoming data flexibly. To
 ;; receive data, we register a listener, which starts a new monitor thread on
 ;; which the handler is called when data is received. This gives us basic
@@ -105,6 +88,10 @@
 (defrecord Port [path device handler]
   Closeable
   (close [this] (close this)))
+
+;; Helper function for throwing exceptions with useful messages
+(defn- err [msg & params]
+  (throw (Exception. (apply format msg params))))
 
 (defn open
   "Opens a port with the specified baud rate and options. If the port will
@@ -140,7 +127,11 @@
     (.removeEventListener)
     (.close)))
 
-;; ## Handlers
+
+;;; ## Reading data
+;; Asychronous reads, and synchronous (blocking) reads
+
+;; ### Handlers
 ;; Handlers are functions that take a single InputStream argument and define how
 ;; received data is processed.
 
@@ -149,20 +140,37 @@
   [port handler]
   (reset! (:handler port) handler))
 
-;; ## Reading and writing data
+(defn on-bytes
+  [port handler]
+  (on-data port (fn [^InputStream in]
+                  (handler (doall (repeatedly (.available in) #(.read in)))))))
 
+
+;; ### Blocking reads
 ;; This stores the existing handler, uses a read-specific handler to deliver
 ;; the response promise, then restores the original handler.
+
 (defn read
   "Performs a synchronous read from the port, blocking until data is received
   or the specified timeout (in milliseconds) has elapsed"
   [port timeout]
   (let [resp (promise)
         orig (deref (:handler port))
-        _    (on-data port (fn [in] (deliver resp (read-stream in))))
+        _    (on-bytes port (partial deliver resp))
         ret  (deref resp timeout nil)
         _    (on-data port orig)]
     ret))
+
+
+;;; ## Writing data
+
+;; Allow write operations on various data types
+(defprotocol Writable (to-bytes ^bytes [this]))
+(extend-protocol Writable
+  Sequential (to-bytes [this] (byte-array (map byte this)))
+  Number (to-bytes [this] (byte-array 1 (byte this)))
+  String (to-bytes [this] (.getBytes this))
+  Object (to-bytes [this] this))
 
 (defn write
   "Writes the data to the port and returns the bytes written"
