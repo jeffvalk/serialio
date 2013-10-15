@@ -22,6 +22,8 @@
 ;; command output to a temp file, waiting for it to be written, then reading it.
 (defn pty-setup
   []
+  (assert (zero? (:exit (sh/sh "which" "socat")))
+          "Tests require package 'socat'.")
   (let [cmd  "socat -d -d pty,raw,echo=0 pty,raw,echo=0"
         tmp  (.getPath (doto (File/createTempFile "socat" ".log")
                          .deleteOnExit))
@@ -53,8 +55,8 @@
 (deftest master-slave
   (let [[master slave] @ports
         exec (partial exec master)
-        echo (fn [in] (write slave (read-stream in)))]
-    (on-data slave echo)
+        echo (partial write slave)]
+    (on-bytes slave echo)
     (testing "Master/slave ports"
       (testing "with a long message"
         (let [m (rand-bytes 2048)]
@@ -70,12 +72,11 @@
           (is (= s (String. (to-bytes (exec s)))) "string")
           (is (= n (first (exec n))) "number"))))))
 
-(deftest mixed-mode
+(deftest bidirectional
   (let [[peer1 peer2] @ports
-        echo (fn [port]
-               (fn [in] (write port (read-stream in))))]
-    (on-data peer1 (echo peer1))
-    (on-data peer2 (echo peer2))
+        echo (fn [port] (partial write port))]
+    (on-bytes peer1 (echo peer1))
+    (on-bytes peer2 (echo peer2))
     (testing "Bidirectional send and receive"
       (let [a (rand-bytes 128)
             b (rand-bytes 256)]
