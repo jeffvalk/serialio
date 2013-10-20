@@ -167,8 +167,8 @@
 ;; Allow write operations on various data types
 (defprotocol Writable (to-bytes ^bytes [this]))
 (extend-protocol Writable
-  Sequential (to-bytes [this] (byte-array (map byte this)))
-  Number (to-bytes [this] (byte-array 1 (byte this)))
+  Sequential (to-bytes [this] (byte-array (map unchecked-byte this)))
+  Number (to-bytes [this] (byte-array 1 (unchecked-byte this)))
   String (to-bytes [this] (.getBytes this))
   Object (to-bytes [this] this))
 
