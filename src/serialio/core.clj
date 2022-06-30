@@ -9,17 +9,18 @@
   (:refer-clojure :exclude [read])
   (:require [clojure.string :as str])
   (:import  (clojure.lang Sequential)
-            (gnu.io CommPortIdentifier
-                    NoSuchPortException
-                    PortInUseException
-                    SerialPort
-                    SerialPortEvent
-                    SerialPortEventListener
-                    UnsupportedCommOperationException)
+            (purejavacomm CommPortIdentifier
+                          NoSuchPortException
+                          PortInUseException
+                          SerialPort
+                          SerialPortEvent
+                          SerialPortEventListener
+                          UnsupportedCommOperationException)
             (java.io Closeable InputStream)))
 
-;; This uses [RXTX](http://rxtx.qbang.org) version 2.2, and for available port
-;; manipulation, leverages speicific behavior of that library.
+;; This uses [PureJavaComm](https://github.com/nyholku/purejavacomm) for serial
+;; communication and available port manipulation, which is API-compatible with
+;; `javax.comm` and hence RXTX.
 
 
 ;;; ## Constants
@@ -29,10 +30,9 @@
 
 
 ;;; ## Available ports
-;; The RXTX driver will first look for an explicit list of defined ports, and
+;; The driver will first look for an explicit list of defined ports, and
 ;; if none exists, will scan the host for ports. Ports are defined using the
-;; "gnu.io.rxtx.SerialPorts" property, either via a "gnu.io.rxtx.properties"
-;; file in "java.ext.dirs" or programmatically. This lets us manipulate the list
+;; "serialio.core.SerialPorts" system property. This lets us manipulate the list
 ;; of available ports at runtime.
 
 (def ^:private path-sep (System/getProperty "path.separator"))
@@ -42,7 +42,7 @@
   'add-ports', the list is returned as is; otherwise, a new scan of the host is
   performed."
   []
-  (if-let [v (System/getProperty "gnu.io.rxtx.SerialPorts")]
+  (if-let [v (System/getProperty "serialio.core.SerialPorts")]
     (seq (.split v path-sep))
     (map #(.getName %)
          (enumeration-seq (CommPortIdentifier/getPortIdentifiers)))))
@@ -52,13 +52,13 @@
   port scanning is performed; only the registered ports are available."
   [& paths]
   (let [v (distinct (apply conj (available-ports) paths))]
-    (System/setProperty "gnu.io.rxtx.SerialPorts" (str/join path-sep v))
+    (System/setProperty "serialio.core.SerialPorts" (str/join path-sep v))
     v))
 
 (defn reset-ports
   "Clears added ports, and restores the default port scanning behavior."
   []
-  (System/clearProperty "gnu.io.rxtx.SerialPorts")
+  (System/clearProperty "serialio.core.SerialPorts")
   (available-ports))
 
 
