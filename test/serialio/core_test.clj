@@ -101,8 +101,8 @@
   ;; Open a PTY connected to a terminal stdio:
   ;;  socat -d -d -,raw,echo=0,escape=0x0f pty,raw,echo=0
 
-  (def path "/dev/pts/6")
-  (add-port-id path)
+  (def path "/dev/pts/2")
+  (add-ports path)
 
   (def port (open path 115200)) ; baud for pty
   (close port)
