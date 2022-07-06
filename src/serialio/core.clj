@@ -93,11 +93,20 @@
 (defn- err [msg & params]
   (throw (Exception. (apply format msg params))))
 
+;; NOTE Unlike RXTX, PureJavaComm's input handling blocks until read. If the
+;; input buffer is not consumed in the "data available" event handler, it hangs
+;; the listener thread. Hence, the no-op handler needs to discard available
+;; input data. There may be a way to change this behavior, but it's not
+;; obviously documented.
+(defn discard
+  "Skips any buffered input data"
+  [^InputStream in] (.skip in (.available in)))
+
 (defn open
   "Opens a port with the specified baud rate and options. If the port will
   listen for incoming data, a handler function may be speficied, which takes an
   InputStream as its lone argument."
-  ([path baud] (open path baud (constantly nil)))
+  ([path baud] (open path baud discard))
   ([path baud handler] (open path baud 8 1 0 handler))
   ([path baud data-bits stop-bits parity handler]
      (try
